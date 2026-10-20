@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=YuE2 Studio
+Comment=AI song generation studio
+Exec=YuE2-Studio
+Icon=yue2-studio
+Terminal=false
+Categories=AudioVideo;Audio;Music;
+StartupWMClass=YuE2-Studio

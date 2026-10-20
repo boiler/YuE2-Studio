@@ -1,3 +1,6 @@
+> **This is a Linux fork** of [timoncool/YuE2-Studio](https://github.com/timoncool/YuE2-Studio): LoRA training on Linux with CUDA, an Arch package and a few fixes.
+> What differs from upstream: [FORK.md](FORK.md).
+
 <div align="center">
 
 <!-- studio family tabs -->

@@ -1,0 +1,148 @@
+# Maintainer: Boiler <boiler@xdot.ru>
+
+pkgname=yue2-studio
+pkgver=3.6.1
+pkgrel=6
+# the fork's tag this package is built from
+_tag=v3.6.1-linux.1
+pkgdesc='Desktop studio for YuE2 song generation (Tauri shell, yue2.cpp Vulkan engine, audio-to-MIDI, CUDA LoRA trainer and captioner)'
+arch=('x86_64')
+url='https://github.com/boiler/YuE2-Studio'
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'vulkan-icd-loader' 'gcc-libs' 'glibc'
+         'gst-plugins-base' 'gst-plugins-good')
+makedepends=('git' 'cargo' 'nodejs' 'npm' 'cmake' 'ninja' 'vulkan-headers' 'shaderc' 'cuda')
+optdepends=('gst-libav: extra audio formats in the player'
+            'vulkan-driver: GPU generation'
+            'cuda: LoRA training on an NVIDIA card (driver 580+)')
+options=('!lto' '!debug')
+
+# pinned in engines/*-source.json of the studio at this tag
+_yue_commit=c8516dbf44d660cca40d3f420c67063e37ec8258
+_hotstep_commit=3e7a077875652fa93529bc2c97efad74a1943352
+_train_commit=ee7286d14232b48ace3b6eed0fcf3048081ef0d1
+# upstream ships the trainer for Windows only; here it is built for this card
+_cuda_arch=${_cuda_arch:-native}
+
+source=("$pkgname::git+https://github.com/boiler/YuE2-Studio.git#tag=$_tag"
+        "yue2.cpp::git+https://github.com/timoncool/yue2.cpp.git#commit=$_yue_commit"
+        "hot-step::git+https://github.com/timoncool/HOT-Step-CPP.git#commit=$_hotstep_commit"
+        "hot-step-train::git+https://github.com/timoncool/HOT-Step-CPP.git#commit=$_train_commit"
+        "ggml-hot::git+https://github.com/scragnog/HOT-ggml.git"
+        "ggml-yue::git+https://github.com/ServeurpersoCom/ggml.git"
+        "ggml-org::git+https://github.com/ggml-org/ggml.git"
+        "vst3sdk::git+https://github.com/steinbergmedia/vst3sdk.git"
+        "vst3_base::git+https://github.com/steinbergmedia/vst3_base.git"
+        "vst3_pluginterfaces::git+https://github.com/steinbergmedia/vst3_pluginterfaces.git"
+        "vst3_public_sdk::git+https://github.com/steinbergmedia/vst3_public_sdk.git"
+        "$pkgname.desktop"
+        "$pkgname.sh")
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
+            'SKIP' 'SKIP')
+
+# Points a submodule at the local mirror makepkg already cloned. A pinned commit
+# that is on no branch (e.g. only in a fork's pull request) is fetched by hash.
+_submodule() {
+  local repo="$1" path="$2" mirror="$3" sha url
+  sha="$(git -C "$repo" ls-tree HEAD "$path" | awk '{print $3}')"
+  if ! git -C "$mirror" cat-file -e "$sha^{commit}" 2>/dev/null; then
+    url="$(git -C "$repo" config -f .gitmodules "submodule.$path.url")"
+    case "$url" in ../*) url="$(git -C "$repo" remote get-url origin | sed 's#/[^/]*$##')/${url#../}" ;; esac
+    git -C "$mirror" fetch --quiet "$url" "$sha:refs/heads/pinned-$sha"
+  fi
+  git -C "$repo" submodule init "$path"
+  git -C "$repo" config "submodule.$path.url" "$srcdir/$mirror"
+  git -C "$repo" -c protocol.file.allow=always submodule update "$path"
+}
+
+prepare() {
+  _submodule yue2.cpp ggml ggml-yue
+
+  _submodule hot-step engine/ggml ggml-org
+  _submodule hot-step engine/vendor/vst3sdk vst3sdk
+  # of the VST3 SDK only what the engine's hosting library compiles
+  _submodule hot-step/engine/vendor/vst3sdk base vst3_base
+  _submodule hot-step/engine/vendor/vst3sdk pluginterfaces vst3_pluginterfaces
+  _submodule hot-step/engine/vendor/vst3sdk public.sdk vst3_public_sdk
+
+  _submodule hot-step-train engine/ggml ggml-hot
+  _submodule hot-step-train engine/vendor/vst3sdk vst3sdk
+  _submodule hot-step-train/engine/vendor/vst3sdk base vst3_base
+  _submodule hot-step-train/engine/vendor/vst3sdk pluginterfaces vst3_pluginterfaces
+  _submodule hot-step-train/engine/vendor/vst3sdk public.sdk vst3_public_sdk
+
+  cd "$pkgname"
+  # the repository pins the Windows MSVC toolchain
+  rm -f rust-toolchain.toml
+  npm --prefix app ci --no-audit --no-fund
+  npm --prefix desktop ci --no-audit --no-fund
+  cargo fetch --locked --manifest-path desktop/src-tauri/Cargo.toml --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+# Same flags as scripts/build-*-runtime-linux.sh: every ggml backend is a
+# module loaded at runtime, found beside the binary through $ORIGIN.
+_ggml_flags=(-G Ninja -DCMAKE_BUILD_TYPE=Release
+             -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON
+             -DCMAKE_BUILD_RPATH='$ORIGIN' -DCMAKE_INSTALL_RPATH='$ORIGIN'
+             -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON)
+
+# the CPU backends are modules nothing links against: each is a target of its own
+_cpu_variants() {
+  sed -n 's/^build \(ggml-cpu-[a-z0-9_]*\): phony.*/\1/p' "$1/build.ninja" | sort -u
+}
+
+build() {
+  # yue2.cpp engine (Vulkan)
+  cmake -S yue2.cpp -B build-yue "${_ggml_flags[@]}" -DGGML_VULKAN=ON
+  cmake --build build-yue --target yue-server ggml-vulkan $(_cpu_variants build-yue)
+
+  # audio-to-MIDI transcriber (CPU: its Vulkan path writes wrong notes)
+  cmake -S hot-step/engine -B build-midi "${_ggml_flags[@]}" -DHOT_STEP_ORT_PATHS=OFF
+  cmake --build build-midi --target ace-midi $(_cpu_variants build-midi)
+
+  # LoRA trainer and the captioner that describes songs by ear (CUDA, linked
+  # against the system's CUDA 13)
+  cmake -S hot-step-train/engine -B build-train -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DGGML_NATIVE=OFF -DGGML_CUDA=ON -DCMAKE_CUDA_COMPILER=/opt/cuda/bin/nvcc \
+    -DCMAKE_CUDA_ARCHITECTURES="$_cuda_arch" \
+    -DCMAKE_BUILD_RPATH='$ORIGIN' -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
+  cmake --build build-train --target ace-train ace-caption
+
+  cd "$pkgname/desktop"
+  export CARGO_TARGET_DIR="$srcdir/target"
+  # aws-lc-sys builds jitterentropy at -O0 and refuses an -O appended after it
+  CFLAGS="$(sed -E 's/(^| )-O[0-9sgz]?( |$)/ /g' <<< "$CFLAGS")"
+  CXXFLAGS="$(sed -E 's/(^| )-O[0-9sgz]?( |$)/ /g' <<< "$CXXFLAGS")"
+  export CFLAGS CXXFLAGS
+  node_modules/.bin/tauri build --no-bundle -- --locked
+}
+
+package() {
+  local res="$pkgdir/usr/lib/YuE2 Studio/resources"
+
+  # the real binary sits beside its resources; /usr/bin gets a launcher
+  install -Dm755 target/release/YuE2-Studio "$pkgdir/usr/lib/YuE2 Studio/YuE2-Studio"
+  install -Dm755 $pkgname.sh "$pkgdir/usr/bin/YuE2-Studio"
+
+  install -d "$res/yue2-cpp" "$res/music-midi"
+  install -m755 "$(find build-yue -maxdepth 2 -type f -name yue-server | head -n1)" "$res/yue2-cpp/"
+  find build-yue -maxdepth 2 -name 'lib*.so*' -exec cp -a {} "$res/yue2-cpp/" \;
+  printf '{"commit":"%s","backend":"vulkan","platform":"linux"}\n' "$_yue_commit" > "$res/yue2-cpp/runtime.json"
+
+  install -m755 build-midi/ace-midi "$res/music-midi/music-midi"
+  find build-midi -maxdepth 2 -name 'lib*.so*' -exec cp -a {} "$res/music-midi/" \;
+  echo "$_hotstep_commit" > "$res/music-midi/runtime.commit"
+
+  install -d "$res/music-train"
+  install -m755 build-train/ace-train "$res/music-train/music-train"
+  install -m755 build-train/ace-caption "$res/music-train/ace-caption"
+  find build-train -maxdepth 2 -name 'lib*.so*' -exec cp -a {} "$res/music-train/" \;
+  echo "$_train_commit" > "$res/music-train/runtime.commit"
+
+  install -Dm644 $pkgname.desktop "$pkgdir/usr/share/applications/$pkgname.desktop"
+  cd "$pkgname/desktop/src-tauri/icons"
+  install -Dm644 32x32.png "$pkgdir/usr/share/icons/hicolor/32x32/apps/$pkgname.png"
+  install -Dm644 128x128.png "$pkgdir/usr/share/icons/hicolor/128x128/apps/$pkgname.png"
+  install -Dm644 128x128@2x.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/$pkgname.png"
+  install -Dm644 "$srcdir/$pkgname/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
