@@ -2,19 +2,18 @@
 
 pkgname=yue2-studio
 pkgver=3.6.1
-pkgrel=6
+pkgrel=7
 # the fork's tag this package is built from
-_tag=v3.6.1-linux.1
-pkgdesc='Desktop studio for YuE2 song generation (Tauri shell, yue2.cpp Vulkan engine, audio-to-MIDI, CUDA LoRA trainer and captioner)'
+_tag=v3.6.1-linux.2
+pkgdesc='Desktop studio for YuE2 song generation (Tauri shell, yue2.cpp engine on CUDA or Vulkan, audio-to-MIDI, CUDA LoRA trainer and captioner)'
 arch=('x86_64')
 url='https://github.com/boiler/YuE2-Studio'
 license=('MIT')
-depends=('webkit2gtk-4.1' 'gtk3' 'vulkan-icd-loader' 'gcc-libs' 'glibc'
+depends=('webkit2gtk-4.1' 'gtk3' 'vulkan-icd-loader' 'cuda' 'gcc-libs' 'glibc'
          'gst-plugins-base' 'gst-plugins-good')
 makedepends=('git' 'cargo' 'nodejs' 'npm' 'cmake' 'ninja' 'vulkan-headers' 'shaderc' 'cuda')
 optdepends=('gst-libav: extra audio formats in the player'
-            'vulkan-driver: GPU generation'
-            'cuda: LoRA training on an NVIDIA card (driver 580+)')
+            'vulkan-driver: GPU generation on cards without CUDA 13')
 options=('!lto' '!debug')
 
 # pinned in engines/*-source.json of the studio at this tag
@@ -96,6 +95,13 @@ build() {
   cmake -S yue2.cpp -B build-yue "${_ggml_flags[@]}" -DGGML_VULKAN=ON
   cmake --build build-yue --target yue-server ggml-vulkan $(_cpu_variants build-yue)
 
+  # its CUDA backend, which the studio loads in place of Vulkan where the card
+  # runs CUDA 13; it sits in cuda13/ and finds ggml beside the engine
+  cmake -S yue2.cpp -B build-yue-cuda "${_ggml_flags[@]}" -DGGML_CUDA=ON \
+    -DCMAKE_CUDA_COMPILER=/opt/cuda/bin/nvcc -DCMAKE_CUDA_ARCHITECTURES="$_cuda_arch" \
+    -DCMAKE_BUILD_RPATH='$ORIGIN/..' -DCMAKE_INSTALL_RPATH='$ORIGIN/..'
+  cmake --build build-yue-cuda --target ggml-cuda
+
   # audio-to-MIDI transcriber (CPU: its Vulkan path writes wrong notes)
   cmake -S hot-step/engine -B build-midi "${_ggml_flags[@]}" -DHOT_STEP_ORT_PATHS=OFF
   cmake --build build-midi --target ace-midi $(_cpu_variants build-midi)
@@ -128,6 +134,7 @@ package() {
   install -m755 "$(find build-yue -maxdepth 2 -type f -name yue-server | head -n1)" "$res/yue2-cpp/"
   find build-yue -maxdepth 2 -name 'lib*.so*' -exec cp -a {} "$res/yue2-cpp/" \;
   printf '{"commit":"%s","backend":"vulkan","platform":"linux"}\n' "$_yue_commit" > "$res/yue2-cpp/runtime.json"
+  install -Dm755 "$(find build-yue-cuda -maxdepth 2 -type f -name libggml-cuda.so | head -n1)" "$res/yue2-cpp/cuda13/libggml-cuda.so"
 
   install -m755 build-midi/ace-midi "$res/music-midi/music-midi"
   find build-midi -maxdepth 2 -name 'lib*.so*' -exec cp -a {} "$res/music-midi/" \;
