@@ -2828,7 +2828,7 @@ async fn card_free_for_training(state: &AppState) -> Result<(), String> {
 /// is a CUDA 13 build and computes on the card only: on the processor one run
 /// would take days.
 fn trainer_card_refusal() -> Option<String> {
-    match hardware::hardware().cuda {
+    match hardware::hardware().card_cuda {
         Some(hardware::CudaBuild::Cuda13) => None,
         Some(hardware::CudaBuild::Cuda12) => Some(format!(
             "training needs NVIDIA driver {} or newer: the trainer is a CUDA 13 build, and this card or its driver runs CUDA 12 only",
@@ -2842,7 +2842,7 @@ fn trainer_card_refusal() -> Option<String> {
 /// "nvidia" on a machine with no CUDA card, "driver" where the card or its
 /// driver runs CUDA 12 only.
 fn trainer_card_needs() -> Option<&'static str> {
-    match hardware::hardware().cuda {
+    match hardware::hardware().card_cuda {
         Some(hardware::CudaBuild::Cuda13) => None,
         Some(hardware::CudaBuild::Cuda12) => Some("driver"),
         None => Some("nvidia"),
@@ -2851,8 +2851,9 @@ fn trainer_card_needs() -> Option<&'static str> {
 
 /// Whether the cuBLAS the trainer's CUDA backend loads is missing. It comes
 /// from beside the engine, which fetches it only for a CUDA 13 run of its own.
+/// Elsewhere the trainer is a local build linked against the system's CUDA.
 fn trainer_cublas_missing(state: &AppState) -> bool {
-    !state.engine_runtime.missing(Some(hardware::CudaBuild::Cuda13)).is_empty()
+    cfg!(windows) && !state.engine_runtime.missing(Some(hardware::CudaBuild::Cuda13)).is_empty()
 }
 
 /// Refuses a run the trainer could not compute on the card.
