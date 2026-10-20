@@ -160,8 +160,11 @@ impl EngineRuntime {
     /// A machine that already has the libraries on its search path - a CUDA
     /// Toolkit installation - downloads nothing: the engine inherits that path
     /// and finds them there.
+    ///
+    /// Off Windows the CUDA backend is linked against the system's CUDA, so
+    /// there is nothing to fetch.
     pub fn missing(&self, cuda: Option<CudaBuild>) -> Vec<&'static Asset> {
-        let Some(build) = cuda else { return Vec::new() };
+        let Some(build) = cuda.filter(|_| cfg!(windows)) else { return Vec::new() };
         let asset = cublas_asset(build);
         if self.downloader.is_installed(asset) || asset.pick.iter().all(|library| is_on_the_search_path(library)) {
             return Vec::new();
@@ -457,8 +460,11 @@ mod tests {
             std::fs::write(runtime.library_dir().join(library), b"x").unwrap();
         }
         assert!(runtime.downloader().is_installed(asset));
-        // The other build asks for its own cuBLAS, unless PATH has it.
-        if !CUDA12_LIBRARIES.iter().all(|library| is_on_the_search_path(library)) {
+        // The other build asks for its own cuBLAS, unless PATH has it; off
+        // Windows the backend uses the system's CUDA and nothing is fetched.
+        if !cfg!(windows) {
+            assert!(runtime.missing(Some(CudaBuild::Cuda12)).is_empty());
+        } else if !CUDA12_LIBRARIES.iter().all(|library| is_on_the_search_path(library)) {
             assert_eq!(runtime.missing(Some(CudaBuild::Cuda12)).len(), 1);
         }
         std::fs::remove_dir_all(&root).ok();

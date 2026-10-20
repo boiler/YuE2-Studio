@@ -106,11 +106,12 @@ fn probe() -> &'static Hardware {
             },
         };
         let device = if nvidia { nvidia_cuda_device() } else { None };
-        // The CUDA builds of the engine and their cuBLAS ship for Windows only; the Linux package
-        // carries the Vulkan engine and the macOS one Metal, whatever the card.
+        // The Windows release ships both CUDA builds of the engine; a Linux
+        // package may carry the backend of one beside its Vulkan engine, and the
+        // macOS one computes on Metal, whatever the card.
         let runs_cuda = device.and_then(|(compute, driver)| cuda_build(compute, driver)).is_some();
-        let cuda = if cfg!(windows) { device.and_then(|(compute, driver)| cuda_build(compute, driver)) } else { None };
         let card_cuda = device.and_then(|(compute, driver)| cuda_build(compute, driver));
+        let cuda = card_cuda.filter(|build| engine_ships(*build));
         let compute_capability = device.map(|(compute, _)| compute);
         Hardware {
             gpu_name,
@@ -236,6 +237,16 @@ fn nvidia_cuda_device() -> Option<((u32, u32), u32)> {
     }
     let line = String::from_utf8_lossy(&output.stdout).lines().next()?.trim().to_owned();
     parse_cuda_query(&line)
+}
+
+/// Whether the engine bundle can run this CUDA build. The Windows release
+/// carries both; on Linux it is the backend module a package put in the
+/// build's folder beside the engine, linked against the system's CUDA.
+fn engine_ships(build: CudaBuild) -> bool {
+    if cfg!(windows) {
+        return true;
+    }
+    cfg!(target_os = "linux") && crate::engine_bundle_root().join(build.folder()).join(music_engine::yue_server::CUDA_BACKEND).is_file()
 }
 
 /// `7.5, 581.29` into the compute capability and the driver's major version.
